@@ -1,10 +1,6 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
-// Get environment variables
-const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
-const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL || "";
-
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
@@ -17,22 +13,12 @@ module.exports = {
     }
   },
   networks: {
-    hardhat: {
-      chainId: 31337
-    },
     sepolia: {
-      url: SEPOLIA_RPC_URL,
-      accounts: PRIVATE_KEY !== "" ? [PRIVATE_KEY] : [],
-      chainId: 11155111
+      url: process.env.SEPOLIA_RPC_URL,
+      accounts: [process.env.PRIVATE_KEY],
     }
   },
-  paths: {
-    sources: "./contracts",
-    tests: "./test",
-    cache: "./cache",
-    artifacts: "./artifacts"
-  },
-  mocha: {
-    timeout: 200000 // 200 seconds max for running tests
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_API_KEY
   }
 };

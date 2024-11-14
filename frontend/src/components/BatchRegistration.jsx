@@ -50,10 +50,10 @@ function BatchRegistration({ isConnected, account }) {
             // Register batch
             await batchRegisterENS(ensNames, eoaAddresses);
             setSuccess('Batch registration successful!');
-            setEntries([{ ensName: '', eoaAddress: '' }]);
+            setEntries([{ ensName: '', eoaAddress: '' }]); // Reset form after success
 
         } catch (error) {
-            setError(error.message);
+            setError('Error: ' + error.message); // More detailed error
         } finally {
             setLoading(false);
         }
@@ -62,7 +62,7 @@ function BatchRegistration({ isConnected, account }) {
     return (
         <div>
             <h2 className="text-xl font-bold mb-4">Batch Register ENS Names</h2>
-            
+
             <form onSubmit={handleSubmit} className="space-y-4">
                 {entries.map((entry, index) => (
                     <div key={index} className="flex gap-4 items-start">
@@ -127,7 +127,7 @@ function BatchRegistration({ isConnected, account }) {
                     {error}
                 </div>
             )}
-            
+
             {success && (
                 <div className="mt-4 p-4 text-sm text-green-700 bg-green-100 rounded-md">
                     {success}

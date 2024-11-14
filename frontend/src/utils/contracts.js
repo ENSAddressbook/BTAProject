@@ -1,121 +1,254 @@
 import { ethers } from 'ethers';
 import contractsConfig from '../contracts/contracts-config.json';
 
-import ENSAddressBookArtifact from '../contracts/ENSAddressBook.json';
-const ENSAddressBookABI = ENSAddressBookArtifact.abi;
-const CONTRACT_ADDRESS = contractsConfig.ensAddressBook.address;
-const MOCK_ENS_ADDRESS = contractsConfig.mockENS.address;
-const MOCK_ENS_ABI = contractsConfig.mockENS.abi;
+const ENS_ADDRESS_BOOK = contractsConfig.ensAddressBook.address;
+const ENS_ABI = contractsConfig.ensAddressBook.abi;
 
+// Constants for configuration
+const CONFIRMATION_BLOCKS = 2;
+const GAS_LIMIT_BUFFER = 1.2;
+const DEFAULT_GAS_LIMIT = 200000;
+const RETRY_ATTEMPTS = 3;
+const EVENT_BLOCK_RANGE = 5000;
+
+// Validation helper
+const validateENSName = (ensName) => {
+    if (!ensName || typeof ensName !== 'string') {
+        throw new Error('Invalid ENS name format');
+    }
+    const normalized = ensName.toLowerCase();
+    if (!normalized.endsWith('.eth')) {
+        throw new Error('ENS name must end with .eth');
+    }
+    return normalized;
+};
+
+// Get nameHash for ENS
+const getNameHash = (ensName) => {
+    return ethers.keccak256(ethers.toUtf8Bytes(ensName.toLowerCase()));
+};
+
+// Contract initialization
 export const getContract = async (withSigner = false) => {
     if (!window.ethereum) {
         throw new Error("Please install MetaMask!");
     }
 
-    await window.ethereum.request({ method: 'eth_requestAccounts' });
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    
-    if (withSigner) {
-        const signer = await provider.getSigner();
-        const contract = new ethers.Contract(CONTRACT_ADDRESS, ENSAddressBookABI, signer);
-        const mockENS = new ethers.Contract(MOCK_ENS_ADDRESS, MOCK_ENS_ABI, signer);
-        return { contract, mockENS, provider, signer };
-    }
-    
-    const contract = new ethers.Contract(CONTRACT_ADDRESS, ENSAddressBookABI, provider);
-    const mockENS = new ethers.Contract(MOCK_ENS_ADDRESS, MOCK_ENS_ABI, provider);
-    return { contract, mockENS, provider };
-};
-
-// Single ENS Registration with ownership check
-export const registerENS = async (ensName, eoaAddress) => {
     try {
-        const { contract, mockENS, provider, signer } = await getContract(true);
-        const account = await signer.getAddress();
+        await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        
+        const network = await provider.getNetwork();
+        const chainId = Number(network.chainId);
+        
+        if (chainId !== 11155111) {
+            throw new Error("Please connect to Sepolia network");
+        }
 
-        // First set ownership in MockENS
-        const nameHash = ethers.keccak256(ethers.toUtf8Bytes(ensName));
-        console.log('Setting ownership for:', ensName);
-        const ownerTx = await mockENS.setOwner(nameHash, account);
-        await provider.waitForTransaction(ownerTx.hash);
-        console.log('Ownership set successfully');
-
-        // Then register
-        const tx = await contract.registerENS(ensName, eoaAddress);
-        console.log('Registration transaction hash:', tx.hash);
-        const receipt = await provider.waitForTransaction(tx.hash);
+        if (withSigner) {
+            const signer = await provider.getSigner();
+            const address = await signer.getAddress();
+            console.log('Connected with address:', address);
+            
+            return {
+                ensAddressBook: new ethers.Contract(ENS_ADDRESS_BOOK, ENS_ABI, signer),
+                provider,
+                signer,
+                address
+            };
+        }
         
         return {
-            transaction: tx,
-            receipt: receipt,
-            success: true
+            ensAddressBook: new ethers.Contract(ENS_ADDRESS_BOOK, ENS_ABI, provider),
+            provider
         };
+    } catch (error) {
+        console.error("Contract initialization error:", error);
+        throw new Error(`Failed to initialize contract: ${error.message}`);
+    }
+};
+
+// Registration check
+export const isENSRegistered = async (ensName) => {
+    try {
+        const normalizedName = validateENSName(ensName);
+        const { ensAddressBook } = await getContract();
+        return await ensAddressBook.isENSRegistered(normalizedName);
+    } catch (error) {
+        console.error("Error checking ENS registration:", error);
+        throw error;
+    }
+};
+
+// ENS registration
+export const registerENS = async (ensName, eoaAddress) => {
+    try {
+        const normalizedName = validateENSName(ensName);
+        if (!ethers.isAddress(eoaAddress)) {
+            throw new Error('Invalid EOA address format');
+        }
+
+        const { ensAddressBook, provider, signer, address } = await getContract(true);
+        
+        if (address.toLowerCase() !== eoaAddress.toLowerCase()) {
+            throw new Error("Can only register ENS for your own address");
+        }
+
+        const isRegistered = await ensAddressBook.isENSRegistered(normalizedName);
+        if (isRegistered) {
+            throw new Error(`ENS name ${normalizedName} is already registered`);
+        }
+
+        console.log('Starting ENS registration process...');
+
+        const gasEstimate = await ensAddressBook.registerENS.estimateGas(normalizedName, eoaAddress);
+        const gasLimit = Math.floor(Number(gasEstimate) * GAS_LIMIT_BUFFER);
+
+        const feeData = await provider.getFeeData();
+        const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas || ethers.parseUnits('1', 'gwei');
+
+        const tx = await ensAddressBook.registerENS(normalizedName, eoaAddress, {
+            gasLimit,
+            maxFeePerGas: feeData.maxFeePerGas,
+            maxPriorityFeePerGas,
+            nonce: await provider.getTransactionCount(address, 'latest')
+        });
+
+        console.log('Transaction sent:', tx.hash);
+
+        const receipt = await provider.waitForTransaction(tx.hash, CONFIRMATION_BLOCKS);
+        if (receipt.status === 0) {
+            throw new Error('Transaction failed');
+        }
+
+        const events = receipt.logs
+            .map(log => {
+                try {
+                    return ensAddressBook.interface.parseLog({
+                        topics: log.topics,
+                        data: log.data
+                    });
+                } catch (e) {
+                    return null;
+                }
+            })
+            .filter(Boolean);
+
+        const verifyRegistered = await ensAddressBook.isENSRegistered(normalizedName);
+        if (!verifyRegistered) {
+            throw new Error('Transaction completed but ENS registration failed verification');
+        }
+
+        // Get registration details using mappings
+        const nameHash = getNameHash(normalizedName);
+        const registeredAddress = await ensAddressBook.ensToEOA(nameHash);
+        
+
+        // And modify the return to
+return {
+    transaction: tx,
+    receipt,
+    success: true,
+    events,
+    details: {
+        ensName: normalizedName,
+        eoaAddress: registeredAddress,
+        txHash: tx.hash,
+        blockNumber: receipt.blockNumber,
+        events: events.map(e => e.name)
+    }
+};
+
     } catch (error) {
         console.error("Error registering ENS:", error);
         throw error;
     }
 };
 
-// Batch ENS Registration
-export const batchRegisterENS = async (ensNames, eoaAddresses) => {
+// ENS resolution
+export const resolveENS = async (ensName) => {
     try {
-        const { contract, mockENS, provider, signer } = await getContract(true);
-        const account = await signer.getAddress();
-
-        // First set ownership for all names
-        for (const ensName of ensNames) {
-            const nameHash = ethers.keccak256(ethers.toUtf8Bytes(ensName));
-            const ownerTx = await mockENS.setOwner(nameHash, account);
-            await provider.waitForTransaction(ownerTx.hash);
+        const normalizedName = validateENSName(ensName);
+        const { ensAddressBook } = await getContract();
+        const address = await ensAddressBook.resolveENS(normalizedName);
+        
+        if (address === ethers.ZeroAddress) {
+            throw new Error(`ENS name ${normalizedName} not registered`);
         }
 
-        const tx = await contract.batchRegisterENS(ensNames, eoaAddresses);
-        const receipt = await provider.waitForTransaction(tx.hash);
+        const nameHash = getNameHash(normalizedName);
+        
         
         return {
-            transaction: tx,
-            receipt: receipt,
-            success: true
+            ensName: normalizedName,
+            address
         };
-    } catch (error) {
-        console.error("Error in batch registration:", error);
-        throw error;
-    }
-};
-
-// Single ENS Resolution
-export const resolveENS = async (ensName) => {
-    const { contract } = await getContract();
-    try {
-        return await contract.resolveENS(ensName);
     } catch (error) {
         console.error("Error resolving ENS:", error);
         throw error;
     }
 };
 
-// Batch ENS Resolution
-export const batchResolveENS = async (ensNames) => {
-    const { contract } = await getContract();
+// Batch resolution
+export const batchResolveENS = async (ensNames, chunkSize = 50) => {
     try {
-        return await contract.batchResolveENS(ensNames);
+        if (!Array.isArray(ensNames) || ensNames.length === 0) {
+            throw new Error('Invalid input: ensNames must be a non-empty array');
+        }
+
+        const normalizedNames = ensNames.map(validateENSName);
+        const { ensAddressBook } = await getContract();
+
+        const results = [];
+        for (let i = 0; i < normalizedNames.length; i += chunkSize) {
+            const chunk = normalizedNames.slice(i, i + chunkSize);
+            const addresses = await ensAddressBook.batchResolveENS(chunk);
+            results.push(...addresses);
+        }
+
+        return normalizedNames.map((name, index) => ({
+            ensName: name,
+            address: results[index]
+        }));
     } catch (error) {
         console.error("Error in batch resolution:", error);
         throw error;
     }
 };
 
-// Update ENS mapping
+// Update ENS
 export const updateENS = async (ensName, newEoaAddress) => {
     try {
-        const { contract, provider } = await getContract(true);
-        const tx = await contract.updateENS(ensName, newEoaAddress);
-        const receipt = await provider.waitForTransaction(tx.hash);
+        const normalizedName = validateENSName(ensName);
+        if (!ethers.isAddress(newEoaAddress)) {
+            throw new Error('Invalid new EOA address');
+        }
+
+        const { ensAddressBook, provider, signer, address } = await getContract(true);
+
+        const currentEOA = await ensAddressBook.resolveENS(normalizedName);
+        if (address.toLowerCase() !== currentEOA.toLowerCase()) {
+            throw new Error("Must be the current registration owner to update");
+        }
+        if (address.toLowerCase() !== newEoaAddress.toLowerCase()) {
+            throw new Error("Can only update to an address you own");
+        }
+
+        const tx = await ensAddressBook.updateENS(normalizedName, newEoaAddress, {
+            gasLimit: DEFAULT_GAS_LIMIT
+        });
+        const receipt = await provider.waitForTransaction(tx.hash, CONFIRMATION_BLOCKS);
         
         return {
             transaction: tx,
-            receipt: receipt,
-            success: true
+            receipt,
+            success: true,
+            details: {
+                ensName: normalizedName,
+                newAddress: newEoaAddress,
+                txHash: tx.hash,
+                blockNumber: receipt.blockNumber
+            }
         };
     } catch (error) {
         console.error("Error updating ENS:", error);
@@ -123,17 +256,31 @@ export const updateENS = async (ensName, newEoaAddress) => {
     }
 };
 
-// Remove ENS mapping
+// Remove ENS
 export const removeENS = async (ensName) => {
     try {
-        const { contract, provider } = await getContract(true);
-        const tx = await contract.removeENS(ensName);
-        const receipt = await provider.waitForTransaction(tx.hash);
+        const normalizedName = validateENSName(ensName);
+        const { ensAddressBook, provider, signer, address } = await getContract(true);
+
+        const currentEOA = await ensAddressBook.resolveENS(normalizedName);
+        if (address.toLowerCase() !== currentEOA.toLowerCase()) {
+            throw new Error("Must be the registration owner to remove");
+        }
+
+        const tx = await ensAddressBook.removeENS(normalizedName, {
+            gasLimit: DEFAULT_GAS_LIMIT
+        });
+        const receipt = await provider.waitForTransaction(tx.hash, CONFIRMATION_BLOCKS);
         
         return {
             transaction: tx,
-            receipt: receipt,
-            success: true
+            receipt,
+            success: true,
+            details: {
+                ensName: normalizedName,
+                txHash: tx.hash,
+                blockNumber: receipt.blockNumber
+            }
         };
     } catch (error) {
         console.error("Error removing ENS:", error);
@@ -141,37 +288,76 @@ export const removeENS = async (ensName) => {
     }
 };
 
-// Check if ENS is registered
-export const isENSRegistered = async (ensName) => {
-    const { contract } = await getContract();
+// Get registration details
+export const getRegistrationDetails = async (ensName) => {
     try {
-        return await contract.isENSRegistered(ensName);
+        const normalizedName = validateENSName(ensName);
+        const { ensAddressBook } = await getContract();
+        
+        const nameHash = getNameHash(normalizedName);
+        const address = await ensAddressBook.ensToEOA(nameHash);
+        
+        
+        return {
+            ensName: normalizedName,
+            eoaAddress: address,
+          
+            registered: address !== ethers.ZeroAddress
+        };
     } catch (error) {
-        console.error("Error checking ENS registration:", error);
+        console.error("Error getting registration details:", error);
         throw error;
     }
 };
 
-// Get past events for history
+// Get past events
 export const getPastEvents = async () => {
     try {
-        const { contract, provider } = await getContract();
+        const { ensAddressBook, provider } = await getContract();
         const currentBlock = await provider.getBlockNumber();
-        const fromBlock = Math.max(0, currentBlock - 1000);
         
-        const addedFilter = contract.filters.ENSMappingAdded();
-        const updatedFilter = contract.filters.ENSMappingUpdated();
-        const removedFilter = contract.filters.ENSMappingRemoved();
+        // Get blocks and transactions
+        const BLOCKS_PER_PAGE = 25;
+        const fromBlock = Math.max(currentBlock - BLOCKS_PER_PAGE, 0);
         
-        const [added, updated, removed] = await Promise.all([
-            contract.queryFilter(addedFilter, fromBlock),
-            contract.queryFilter(updatedFilter, fromBlock),
-            contract.queryFilter(removedFilter, fromBlock)
-        ]);
-        
-        return [...added, ...updated, ...removed].sort((a, b) => b.blockNumber - a.blockNumber);
+        // Get block details with timestamps
+        const blockPromises = [];
+        for (let i = currentBlock; i > fromBlock; i--) {
+            blockPromises.push(provider.getBlock(i));
+        }
+        const blocks = await Promise.all(blockPromises);
+
+        // Get events for each block
+        const events = await Promise.all(blocks.map(async block => {
+            const blockEvents = await Promise.all([
+                ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingAdded(), block.number, block.number),
+                ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingUpdated(), block.number, block.number),
+                ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingRemoved(), block.number, block.number)
+            ]);
+
+            const [added, updated, removed] = blockEvents;
+            return {
+                blockNumber: block.number,
+                timestamp: block.timestamp,
+                events: [...added, ...updated, ...removed].map(event => ({
+                    eventName: event.eventFragment.name,
+                    ensName: event.args[2],
+                    eoaAddress: event.args[1],
+                    transactionHash: event.transactionHash,
+                    gasUsed: event.gasUsed || 0,
+                    timestamp: block.timestamp
+                }))
+            };
+        }));
+
+        return {
+            fromBlock,
+            toBlock: currentBlock,
+            events: events.filter(block => block.events.length > 0)
+        };
+
     } catch (error) {
-        console.error("Error fetching history:", error);
+        console.error("Error fetching events:", error);
         throw error;
     }
 };

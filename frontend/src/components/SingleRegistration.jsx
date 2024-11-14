@@ -1,15 +1,44 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
+import { 
+    registerENS, 
+    isENSRegistered, 
+    getRegistrationDetails 
+} from '../utils/contracts';
 import { ethers } from 'ethers';
-import { registerENS, isENSRegistered } from '../utils/contracts';
-import contractConfig from '../contracts/contracts-config.json';
 
 function SingleRegistration({ isConnected = false, account = '' }) {
     const [ensName, setEnsName] = useState('');
-    const [eoaAddress, setEoaAddress] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
+    const [transactionHash, setTransactionHash] = useState('');
+    const [registrationStatus, setRegistrationStatus] = useState('idle'); 
+
+    useEffect(() => {
+        if (ensName) {
+            setError('');
+            setSuccess('');
+            setTransactionHash('');
+            setRegistrationStatus('idle');
+        }
+    }, [ensName]);
+
+    const validateENSName = (name) => {
+        if (!name.endsWith('.eth')) {
+            throw new Error('ENS name must end with .eth');
+        }
+
+        const nameWithoutEth = name.slice(0, -4);
+        if (nameWithoutEth.length < 3) {
+            throw new Error('ENS name must be at least 3 characters long (excluding .eth)');
+        }
+
+        const validNameRegex = /^[a-z0-9-]+\.eth$/;
+        if (!validNameRegex.test(name)) {
+            throw new Error('ENS name can only contain lowercase letters, numbers, and hyphens');
+        }
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -17,7 +46,7 @@ function SingleRegistration({ isConnected = false, account = '' }) {
             setError('Please connect your wallet first');
             return;
         }
-        
+
         if (!account) {
             setError('No account connected');
             return;
@@ -27,134 +56,176 @@ function SingleRegistration({ isConnected = false, account = '' }) {
             setLoading(true);
             setError('');
             setSuccess('');
+            setTransactionHash('');
+            setRegistrationStatus('checking');
 
-            // Check if ENS is already registered
+            
+            validateENSName(ensName);
+
+            
+            console.log('Checking if ENS is registered:', ensName);
             const registered = await isENSRegistered(ensName);
+            
             if (registered) {
-                setError('This ENS name is already registered');
+                const details = await getRegistrationDetails(ensName);
+                if (details.eoaAddress.toLowerCase() === account.toLowerCase()) {
+                    setError('You already own this ENS name');
+                } else {
+                    setError('This ENS name is already registered to another address');
+                }
+                setRegistrationStatus('failed');
                 return;
             }
 
-            // Get provider and signer
-            const provider = new ethers.BrowserProvider(window.ethereum);
-            const signer = await provider.getSigner();
             
-            // Get MockENS contract
-            const mockENS = new ethers.Contract(
-                contractConfig.mockENS.address,
-                contractConfig.mockENS.abi,
-                signer
-            );
-
-            // Set ownership first
-            const nameHash = ethers.keccak256(ethers.toUtf8Bytes(ensName));
-            console.log('Setting ownership for:', ensName);
-            console.log('NameHash:', nameHash);
-            console.log('Account:', account);
+            setRegistrationStatus('registering');
+            console.log('Starting registration process...');
             
-            // Send ownership transaction and wait for confirmation
-            const ownerTx = await mockENS.setOwner(nameHash, account);
-            console.log('Ownership transaction sent:', ownerTx.hash);
-            const ownerReceipt = await provider.waitForTransaction(ownerTx.hash);
-            console.log('Ownership set successfully:', ownerReceipt);
+            const result = await registerENS(ensName, account);
+            console.log('Registration result:', result);
 
-            // Then register
-            try {
-                const tx = await registerENS(ensName, eoaAddress);
-                console.log('Registration transaction sent:', tx.hash);
-                const receipt = await provider.waitForTransaction(tx.hash);
-                console.log('Registration successful:', receipt);
-                
-                setSuccess('ENS successfully registered!');
-                setEnsName('');
-                setEoaAddress('');
-            } catch (error) {
-                console.error('Registration transaction failed:', error);
-                throw error;
-            }
+            setTransactionHash(result.transaction.hash);
+            setRegistrationStatus('confirmed');
+            
+            setSuccess(`ENS name ${ensName} successfully registered!`);
+            setEnsName('');
+
+            
 
         } catch (error) {
             console.error('Registration error:', error);
-            setError(error.message || 'Registration failed');
+            setRegistrationStatus('failed');
+            
+            // Handle specific error cases
+            if (error.code === 'ACTION_REJECTED') {
+                setError('Transaction was rejected in wallet');
+            } else if (error.code === 'INSUFFICIENT_FUNDS') {
+                setError('Insufficient funds to complete the transaction');
+            } else if (error.message.includes('gas')) {
+                setError('Transaction failed: Gas estimation failed. The transaction might fail.');
+            } else {
+                setError(error.message || 'Registration failed');
+            }
         } finally {
             setLoading(false);
         }
     };
 
-    // Early return if not connected
+    const getStatusMessage = () => {
+        switch (registrationStatus) {
+            case 'checking':
+                return 'Checking name availability...';
+            case 'registering':
+                return 'Registering ENS name...';
+            case 'confirmed':
+                return 'Registration confirmed!';
+            case 'failed':
+                return 'Registration failed';
+            default:
+                return '';
+        }
+    };
+
     if (!isConnected) {
         return (
-            <div className="max-w-md mx-auto text-center">
+            <div className="w-full max-w-md mx-auto p-4 text-center">
                 <p className="text-gray-600">Please connect your wallet to register ENS names.</p>
             </div>
         );
     }
 
     return (
-        <div className="max-w-md mx-auto">
-            <h2 className="text-xl font-bold mb-4">Register ENS Name</h2>
-            
-            <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                        ENS Name
-                    </label>
-                    <input
-                        type="text"
-                        value={ensName}
-                        onChange={(e) => setEnsName(e.target.value)}
-                        placeholder="example.eth"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+        <div className="w-full max-w-md mx-auto p-4">
+            <div className="bg-white rounded-lg shadow-md p-6">
+                <h2 className="text-xl font-bold mb-6 text-gray-800">Register ENS Name</h2>
+                
+                <form onSubmit={handleSubmit} className="space-y-6">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                            ENS Name
+                        </label>
+                        <input
+                            type="text"
+                            value={ensName}
+                            onChange={(e) => setEnsName(e.target.value.toLowerCase())}
+                            placeholder="yourname.eth"
+                            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            disabled={loading}
+                            required
+                        />
+                        <p className="mt-1 text-sm text-gray-500">
+                            This will be registered to your current address:{' '}
+                            {account.slice(0, 6)}...{account.slice(-4)}
+                        </p>
+                    </div>
+
+                    <button
+                        type="submit"
                         disabled={loading}
-                        required
-                    />
-                </div>
+                        className={`w-full ${
+                            loading 
+                                ? 'bg-gray-400 cursor-not-allowed' 
+                                : 'bg-blue-600 hover:bg-blue-700'
+                        } text-white font-medium py-2 px-4 rounded-md transition duration-150 ease-in-out`}
+                    >
+                        {loading ? (
+                            <span className="flex items-center justify-center">
+                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                {getStatusMessage()}
+                            </span>
+                        ) : (
+                            'Register ENS'
+                        )}
+                    </button>
+                </form>
 
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                        EOA Address
-                    </label>
-                    <input
-                        type="text"
-                        value={eoaAddress}
-                        onChange={(e) => setEoaAddress(e.target.value)}
-                        placeholder="0x..."
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                        disabled={loading}
-                        required
-                    />
-                </div>
+                {error && (
+                    <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">
+                        {error}
+                    </div>
+                )}
 
-                <button
-                    type="submit"
-                    disabled={loading}
-                    className={`w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white 
-                        ${loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
-                >
-                    {loading ? 'Registering...' : 'Register ENS'}
-                </button>
-            </form>
+                {success && (
+                    <div className="mt-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded-md text-sm">
+                        <p>{success}</p>
+                        {transactionHash && (
+                            <p className="mt-2">
+                                Transaction Hash:{' '}
+                                <a 
+                                    href={`https://sepolia.etherscan.io/tx/${transactionHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:text-blue-800 break-all"
+                                >
+                                    {transactionHash}
+                                </a>
+                            </p>
+                        )}
+                    </div>
+                )}
 
-            {error && (
-                <div className="mt-4 p-4 text-sm text-red-700 bg-red-100 rounded-md">
-                    {error}
-                </div>
-            )}
-            
-            {success && (
-                <div className="mt-4 p-4 text-sm text-green-700 bg-green-100 rounded-md">
-                    {success}
-                </div>
-            )}
-
-            {/* Debug Information */}
-            {process.env.NODE_ENV === 'development' && (
-                <div className="mt-4 p-4 bg-gray-100 rounded-md text-xs">
-                    <p>Connected Account: {account}</p>
-                    <p>MockENS Address: {contractConfig.mockENS.address}</p>
-                    <p>ENSBook Address: {contractConfig.ensAddressBook.address}</p>
-                </div>
-            )}
+                {registrationStatus !== 'idle' && registrationStatus !== 'failed' && (
+                    <div className="mt-4 p-3 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-sm">
+                        <p>{getStatusMessage()}</p>
+                        {transactionHash && (
+                            <p className="mt-2">
+                                View transaction on{' '}
+                                <a 
+                                    href={`https://sepolia.etherscan.io/tx/${transactionHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:text-blue-800"
+                                >
+                                    Etherscan
+                                </a>
+                            </p>
+                        )}
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
