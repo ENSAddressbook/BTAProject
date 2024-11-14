@@ -111,7 +111,7 @@ contract ENSAddressBook is Ownable {
     function removeENS(string calldata ensName) 
         external 
         onlyRegistrationOwner(ensName)
-        verifyENSOwnership(ensName)  // Added ENS ownership check
+        verifyENSOwnership(ensName)  
     {
         bytes32 nameHash = keccak256(abi.encodePacked(ensName));
         address oldAddress = ensToEOA[nameHash];

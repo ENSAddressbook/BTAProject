@@ -13,13 +13,20 @@ const EventHistory = ({ isConnected }) => {
         try {
             setLoading(true);
             setError('');
-            const fetchedEvents = await getPastEvents();
-            // Ensure we're setting an array
-            setEvents(Array.isArray(fetchedEvents) ? fetchedEvents : []);
+            const result = await getPastEvents();
+            // Flatten the events array from blocks
+            const flattenedEvents = result.events
+                .flatMap(block => block.events.map(event => ({
+                    ...event,
+                    blockNumber: block.blockNumber,
+                    timestamp: block.timestamp
+                })))
+                .sort((a, b) => b.blockNumber - a.blockNumber);
+            setEvents(flattenedEvents);
         } catch (error) {
             console.error('Error fetching events:', error);
             setError('Failed to fetch events. Please try again.');
-            setEvents([]); // Reset to empty array on error
+            setEvents([]);
         } finally {
             setLoading(false);
         }
@@ -29,12 +36,11 @@ const EventHistory = ({ isConnected }) => {
         if (isConnected) {
             fetchEvents();
         } else {
-            setEvents([]); // Reset when disconnected
+            setEvents([]);
         }
     }, [isConnected]);
 
     const getEventColor = (eventName) => {
-        if (!eventName) return 'bg-gray-100 text-gray-800 border-gray-200';
         switch (eventName) {
             case 'ENSMappingAdded':
                 return 'bg-green-100 text-green-800 border-green-200';
@@ -49,16 +55,13 @@ const EventHistory = ({ isConnected }) => {
 
     const formatTime = (timestamp) => {
         if (!timestamp) return '';
-        const date = new Date(Number(timestamp) * 1000);
-        return date.toLocaleString();
+        return new Date(Number(timestamp) * 1000).toLocaleString();
     };
 
-    // Safe filter function
-    const filteredEvents = Array.isArray(events) ? events.filter(event => {
-        if (!event || !event.eventName) return false;
+    const filteredEvents = events.filter(event => {
         if (filter === 'all') return true;
         return event.eventName.toLowerCase().includes(filter.toLowerCase());
-    }) : [];
+    });
 
     if (!isConnected) {
         return (
@@ -116,7 +119,7 @@ const EventHistory = ({ isConnected }) => {
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Block #</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ENS Name</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Details</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Address</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Transaction</th>
                                 </tr>
                             </thead>
@@ -139,10 +142,7 @@ const EventHistory = ({ isConnected }) => {
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">
                                             {event.eoaAddress && 
-                                                <span>Address: {event.eoaAddress.slice(0, 6)}...{event.eoaAddress.slice(-4)}</span>
-                                            }
-                                            {event.newAddress && 
-                                                <span>New: {event.newAddress.slice(0, 6)}...{event.newAddress.slice(-4)}</span>
+                                                <span>{event.eoaAddress.slice(0, 6)}...{event.eoaAddress.slice(-4)}</span>
                                             }
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">

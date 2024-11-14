@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getContract, isENSRegistered, registerENS, resolveENS, batchResolveENS, getPastEvents } from './utils/contracts';
 import SingleRegistration from './components/SingleRegistration';
-import SingleResolver from './components/SingleResolver';
+import RemoveENS from './components/RemoveENS';
 import BatchResolver from './components/BatchResolver';
 import EventHistory from './components/EventHistory';
 import { ethers } from 'ethers';
@@ -241,7 +241,7 @@ function App() {
 
   const tabs = [
     { id: 'register', name: 'Single Register' },
-    { id: 'resolve', name: 'Single Resolve' },
+    { id: 'remove', name: 'Remove ENS' },
     { id: 'batch-resolve', name: 'Batch Resolve' },
     { id: 'history', name: 'History' }
   ];
@@ -336,12 +336,11 @@ function App() {
                 loading={loading}
               />
             )}
-            {activeTab === 'resolve' && (
-              <SingleResolver 
-                onResolve={handleResolveENS}
-                isConnected={isConnected && isCorrectNetwork}
-                loading={loading}
-              />
+            {activeTab === 'remove' && (
+            <RemoveENS 
+              isConnected={isConnected && isCorrectNetwork}
+              account={account}
+            />
             )}
             {activeTab === 'batch-resolve' && (
               <BatchResolver 

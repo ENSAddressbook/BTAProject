@@ -310,54 +310,85 @@ export const getRegistrationDetails = async (ensName) => {
     }
 };
 
-// Get past events
 export const getPastEvents = async () => {
     try {
         const { ensAddressBook, provider } = await getContract();
         const currentBlock = await provider.getBlockNumber();
-        
-        // Get blocks and transactions
-        const BLOCKS_PER_PAGE = 25;
-        const fromBlock = Math.max(currentBlock - BLOCKS_PER_PAGE, 0);
-        
-        // Get block details with timestamps
-        const blockPromises = [];
-        for (let i = currentBlock; i > fromBlock; i--) {
-            blockPromises.push(provider.getBlock(i));
-        }
-        const blocks = await Promise.all(blockPromises);
+        const BLOCK_RANGE = 100000;
+        const fromBlock = Math.max(currentBlock - BLOCK_RANGE, 0);
 
-        // Get events for each block
-        const events = await Promise.all(blocks.map(async block => {
-            const blockEvents = await Promise.all([
-                ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingAdded(), block.number, block.number),
-                ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingUpdated(), block.number, block.number),
-                ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingRemoved(), block.number, block.number)
-            ]);
+        const [added, updated, removed] = await Promise.all([
+            ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingAdded(), fromBlock, currentBlock),
+            ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingUpdated(), fromBlock, currentBlock),
+            ensAddressBook.queryFilter(ensAddressBook.filters.ENSMappingRemoved(), fromBlock, currentBlock)
+        ]);
 
-            const [added, updated, removed] = blockEvents;
-            return {
-                blockNumber: block.number,
-                timestamp: block.timestamp,
-                events: [...added, ...updated, ...removed].map(event => ({
+        const allEvents = [...added, ...updated, ...removed];
+        
+        // Get timestamps
+        const blockTimestamps = await Promise.all(
+            [...new Set(allEvents.map(event => event.blockNumber))].map(async blockNumber => {
+                const block = await provider.getBlock(blockNumber);
+                return { blockNumber, timestamp: block.timestamp };
+            })
+        );
+        const timestampMap = Object.fromEntries(
+            blockTimestamps.map(({ blockNumber, timestamp }) => [blockNumber, timestamp])
+        );
+
+        // Get detailed transaction info
+        const formattedEvents = await Promise.all(allEvents.map(async event => {
+            try {
+                const tx = await provider.getTransaction(event.transactionHash);
+                const receipt = await provider.getTransactionReceipt(event.transactionHash);
+                const block = await provider.getBlock(event.blockNumber);
+
+                return {
+                    blockNumber: event.blockNumber,
+                    timestamp: timestampMap[event.blockNumber],
+                    eventName: event.eventFragment.name,
+                    ensName: event.args[2], // ENS name
+                    eoaAddress: event.args[1], // EOA address
+                    transactionHash: event.transactionHash,
+                    transactionDetails: {
+                        from: tx.from,
+                        gas: tx.gasLimit.toString(),
+                        gasUsed: receipt.gasUsed.toString(),
+                        time: new Date(block.timestamp * 1000).toLocaleString(),
+                        successful: receipt.status === 1,
+                        action: event.eventFragment.name === 'ENSMappingAdded' ? 'Registration' :
+                               event.eventFragment.name === 'ENSMappingRemoved' ? 'Removal' : 'Update',
+                        confirmations: currentBlock - receipt.blockNumber
+                    }
+                };
+            } catch (error) {
+                console.error(`Error fetching transaction details for ${event.transactionHash}:`, error);
+                return {
+                    blockNumber: event.blockNumber,
+                    timestamp: timestampMap[event.blockNumber],
                     eventName: event.eventFragment.name,
                     ensName: event.args[2],
                     eoaAddress: event.args[1],
                     transactionHash: event.transactionHash,
-                    gasUsed: event.gasUsed || 0,
-                    timestamp: block.timestamp
-                }))
-            };
+                    transactionDetails: {
+                        action: event.eventFragment.name === 'ENSMappingAdded' ? 'Registration' :
+                               event.eventFragment.name === 'ENSMappingRemoved' ? 'Removal' : 'Update',
+                    }
+                };
+            }
         }));
 
         return {
             fromBlock,
             toBlock: currentBlock,
-            events: events.filter(block => block.events.length > 0)
+            events: [{
+                blockNumber: currentBlock,
+                events: formattedEvents.sort((a, b) => b.blockNumber - a.blockNumber)
+            }]
         };
 
     } catch (error) {
-        console.error("Error fetching events:", error);
+        console.error("Error in getPastEvents:", error);
         throw error;
     }
 };

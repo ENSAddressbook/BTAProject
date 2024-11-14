@@ -1,26 +1,22 @@
 import { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import { 
-    registerENS, 
-    isENSRegistered, 
-    getRegistrationDetails 
-} from '../utils/contracts';
+import { removeENS, getRegistrationDetails } from '../utils/contracts';
 import { ethers } from 'ethers';
 
-function SingleRegistration({ isConnected = false, account = '' }) {
+function RemoveENS({ isConnected = false, account = '' }) {
     const [ensName, setEnsName] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [transactionHash, setTransactionHash] = useState('');
-    const [registrationStatus, setRegistrationStatus] = useState('idle'); 
+    const [removalStatus, setRemovalStatus] = useState('idle');
 
     useEffect(() => {
         if (ensName) {
             setError('');
             setSuccess('');
             setTransactionHash('');
-            setRegistrationStatus('idle');
+            setRemovalStatus('idle');
         }
     }, [ensName]);
 
@@ -57,47 +53,33 @@ function SingleRegistration({ isConnected = false, account = '' }) {
             setError('');
             setSuccess('');
             setTransactionHash('');
-            setRegistrationStatus('checking');
+            setRemovalStatus('checking');
 
-            
             validateENSName(ensName);
 
-            
-            console.log('Checking if ENS is registered:', ensName);
-            const registered = await isENSRegistered(ensName);
-            
-            if (registered) {
-                const details = await getRegistrationDetails(ensName);
-                if (details.eoaAddress.toLowerCase() === account.toLowerCase()) {
-                    setError('You already own this ENS name');
-                } else {
-                    setError('This ENS name is already registered to another address');
-                }
-                setRegistrationStatus('failed');
+            const details = await getRegistrationDetails(ensName);
+            if (details.eoaAddress.toLowerCase() !== account.toLowerCase()) {
+                setError('You are not the owner of this ENS name');
+                setRemovalStatus('failed');
                 return;
             }
 
-            // Proceed with registration
-            setRegistrationStatus('registering');
-            console.log('Starting registration process...');
-            
-            const result = await registerENS(ensName, account);
-            console.log('Registration result:', result);
+            setRemovalStatus('removing');
+            console.log('Starting removal process...');
+
+            const result = await removeENS(ensName);
+            console.log('Removal result:', result);
 
             setTransactionHash(result.transaction.hash);
-            setRegistrationStatus('confirmed');
-            
-            setSuccess(`ENS name ${ensName} successfully registered!`);
+            setRemovalStatus('confirmed');
+
+            setSuccess(`ENS name ${ensName} successfully removed!`);
             setEnsName('');
 
-            // Optional: Update any parent component state or trigger refresh
-            // onRegistrationComplete && onRegistrationComplete();
-
         } catch (error) {
-            console.error('Registration error:', error);
-            setRegistrationStatus('failed');
-            
-            // Handle specific error cases
+            console.error('Removal error:', error);
+            setRemovalStatus('failed');
+
             if (error.code === 'ACTION_REJECTED') {
                 setError('Transaction was rejected in wallet');
             } else if (error.code === 'INSUFFICIENT_FUNDS') {
@@ -105,7 +87,7 @@ function SingleRegistration({ isConnected = false, account = '' }) {
             } else if (error.message.includes('gas')) {
                 setError('Transaction failed: Gas estimation failed. The transaction might fail.');
             } else {
-                setError(error.message || 'Registration failed');
+                setError(error.message || 'Removal failed');
             }
         } finally {
             setLoading(false);
@@ -113,15 +95,15 @@ function SingleRegistration({ isConnected = false, account = '' }) {
     };
 
     const getStatusMessage = () => {
-        switch (registrationStatus) {
+        switch (removalStatus) {
             case 'checking':
-                return 'Checking name availability...';
-            case 'registering':
-                return 'Registering ENS name...';
+                return 'Checking ownership...';
+            case 'removing':
+                return 'Removing ENS name...';
             case 'confirmed':
-                return 'Registration confirmed!';
+                return 'Removal confirmed!';
             case 'failed':
-                return 'Registration failed';
+                return 'Removal failed';
             default:
                 return '';
         }
@@ -130,7 +112,7 @@ function SingleRegistration({ isConnected = false, account = '' }) {
     if (!isConnected) {
         return (
             <div className="w-full max-w-md mx-auto p-4 text-center">
-                <p className="text-gray-600">Please connect your wallet to register ENS names.</p>
+                <p className="text-gray-600">Please connect your wallet to remove ENS names.</p>
             </div>
         );
     }
@@ -138,12 +120,12 @@ function SingleRegistration({ isConnected = false, account = '' }) {
     return (
         <div className="w-full max-w-md mx-auto p-4">
             <div className="bg-white rounded-lg shadow-md p-6">
-                <h2 className="text-xl font-bold mb-6 text-gray-800">Register ENS Name</h2>
+                <h2 className="text-xl font-bold mb-6 text-gray-800">Remove ENS Name</h2>
                 
                 <form onSubmit={handleSubmit} className="space-y-6">
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">
-                            ENS Name
+                            ENS Name to Remove
                         </label>
                         <input
                             type="text"
@@ -155,8 +137,7 @@ function SingleRegistration({ isConnected = false, account = '' }) {
                             required
                         />
                         <p className="mt-1 text-sm text-gray-500">
-                            This will be registered to your current address:{' '}
-                            {account.slice(0, 6)}...{account.slice(-4)}
+                            Connected address: {account.slice(0, 6)}...{account.slice(-4)}
                         </p>
                     </div>
 
@@ -166,7 +147,7 @@ function SingleRegistration({ isConnected = false, account = '' }) {
                         className={`w-full ${
                             loading 
                                 ? 'bg-gray-400 cursor-not-allowed' 
-                                : 'bg-blue-600 hover:bg-blue-700'
+                                : 'bg-red-600 hover:bg-red-700'
                         } text-white font-medium py-2 px-4 rounded-md transition duration-150 ease-in-out`}
                     >
                         {loading ? (
@@ -178,7 +159,7 @@ function SingleRegistration({ isConnected = false, account = '' }) {
                                 {getStatusMessage()}
                             </span>
                         ) : (
-                            'Register ENS'
+                            'Remove ENS'
                         )}
                     </button>
                 </form>
@@ -208,7 +189,7 @@ function SingleRegistration({ isConnected = false, account = '' }) {
                     </div>
                 )}
 
-                {registrationStatus !== 'idle' && registrationStatus !== 'failed' && (
+                {removalStatus !== 'idle' && removalStatus !== 'failed' && (
                     <div className="mt-4 p-3 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-sm">
                         <p>{getStatusMessage()}</p>
                         {transactionHash && (
@@ -231,9 +212,9 @@ function SingleRegistration({ isConnected = false, account = '' }) {
     );
 }
 
-SingleRegistration.propTypes = {
+RemoveENS.propTypes = {
     isConnected: PropTypes.bool.isRequired,
     account: PropTypes.string.isRequired
 };
 
-export default SingleRegistration;
+export default RemoveENS;
